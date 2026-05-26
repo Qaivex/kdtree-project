@@ -11,17 +11,19 @@
 #include <ctype.h>
 #include <math.h>
 
+// разобранные аргументы командной строки
 typedef struct
 {
-    const char *csv_path;
-    const char *op;
-    const char *op_arg1;
-    const char *op_arg2;
-    int no_ansi;
-    int width;
-    int height;
+    const char *csv_path; // путь к входному CSV
+    const char *op;       // имя операции (например, "-kd_nearest")
+    const char *op_arg1;  // первый позиционный аргумент операции
+    const char *op_arg2;  // второй позиционный аргумент операции
+    int no_ansi;          // флаг подавления ANSI-вывода
+    int width;            // ширина холста ANSI-карты
+    int height;           // высота холста ANSI-карты
 } rs_args_t;
 
+// печать справки по использованию утилиты
 static void print_usage(const char *prog)
 {
     fprintf(stderr,
@@ -41,6 +43,7 @@ static void print_usage(const char *prog)
             prog);
 }
 
+// разбор строки "x,y[,z,...]" в массив double, возвращает число чисел
 static size_t parse_coords(const char *s, double *out, size_t max_dim)
 {
     size_t k = 0;
@@ -51,10 +54,11 @@ static size_t parse_coords(const char *s, double *out, size_t max_dim)
         double v = strtod(p, &endp);
         if (endp == p)
         {
-            break;
+            break; // не смогли распарсить — выходим
         }
         out[k++] = v;
         p = endp;
+        // пропуск запятых и пробелов между числами
         while (*p == ',' || isspace((unsigned char)*p))
         {
             ++p;
@@ -63,19 +67,20 @@ static size_t parse_coords(const char *s, double *out, size_t max_dim)
     return k;
 }
 
+// разбор всех аргументов argv в структуру rs_args_t
 static int parse_args(int argc, char **argv, rs_args_t *out)
 {
     memset(out, 0, sizeof(*out));
-    out->width = 80;
-    out->height = 30;
+    out->width = 80;   // ширина ANSI-карты по умолчанию
+    out->height = 30;  // высота ANSI-карты по умолчанию
     if (argc < 3)
     {
-        return -1;
+        return -1; // нужно как минимум csv-файл и операция
     }
     out->csv_path = argv[1];
     out->op = argv[2];
-    int idx = 3;
-    
+    int idx = 3; // индекс следующего аргумента
+    // позиционные аргументы операции (всё, что не начинается с --)
     if (idx < argc && strncmp(argv[idx], "--", 2) != 0)
     {
         out->op_arg1 = argv[idx++];
@@ -84,7 +89,7 @@ static int parse_args(int argc, char **argv, rs_args_t *out)
     {
         out->op_arg2 = argv[idx++];
     }
-    
+    // дальше идут опции --xxx
     while (idx < argc)
     {
         const char *a = argv[idx];
@@ -110,6 +115,7 @@ static int parse_args(int argc, char **argv, rs_args_t *out)
     return 0;
 }
 
+// загрузка CSV с сообщением об ошибке при неудаче
 static int load_or_die(const rs_args_t *a,
                        rs_point_t **pts, size_t *n, size_t *dim)
 {
@@ -121,6 +127,7 @@ static int load_or_die(const rs_args_t *a,
     return 0;
 }
 
+// обработчик CLI-команды -kd_insert
 static int op_kd_insert(const rs_args_t *a)
 {
     rs_point_t *pts = NULL;
@@ -135,7 +142,7 @@ static int op_kd_insert(const rs_args_t *a)
         free(pts);
         return 1;
     }
-    double xq[RS_MAX_DIM];
+    double xq[RS_MAX_DIM];                                  // координаты вставляемой точки
     size_t k = parse_coords(a->op_arg1, xq, RS_MAX_DIM);
     if (k != dim)
     {
@@ -143,7 +150,7 @@ static int op_kd_insert(const rs_args_t *a)
         free(pts);
         return 1;
     }
-    rs_kdtree_t *t = rs_kdtree_build(pts, n, dim);
+    rs_kdtree_t *t = rs_kdtree_build(pts, n, dim);          // строим дерево из файла
     rs_point_t q;
     memset(&q, 0, sizeof(q));
     for (size_t d = 0; d < dim; ++d)
@@ -161,6 +168,7 @@ static int op_kd_insert(const rs_args_t *a)
     return 0;
 }
 
+// обработчик CLI-команды -kd_nearest
 static int op_kd_nearest(const rs_args_t *a)
 {
     rs_point_t *pts = NULL;
@@ -175,7 +183,7 @@ static int op_kd_nearest(const rs_args_t *a)
         free(pts);
         return 1;
     }
-    double xq[RS_MAX_DIM];
+    double xq[RS_MAX_DIM];                                  // координаты query-точки
     size_t k = parse_coords(a->op_arg1, xq, RS_MAX_DIM);
     if (k != dim)
     {
@@ -191,8 +199,8 @@ static int op_kd_nearest(const rs_args_t *a)
         q.coord[d] = xq[d];
     }
     q.dim = dim;
-    rs_point_t best;
-    double sq = 0.0;
+    rs_point_t best;                                        // буфер для ближайшего соседа
+    double sq = 0.0;                                        // квадрат расстояния до соседа
     if (rs_kdtree_nearest(t, &q, &best, &sq))
     {
         printf("Ближайший сосед: ");
@@ -208,7 +216,7 @@ static int op_kd_nearest(const rs_args_t *a)
     return 0;
 }
 
-/* экспорт результатов кластеризации: ANSI-визуализация в stdout */
+// экспорт результатов кластеризации: ANSI-визуализация в stdout
 static void emit_results(const rs_args_t *a,
                          rs_point_t *pts, size_t n)
 {
@@ -218,6 +226,7 @@ static void emit_results(const rs_args_t *a,
     }
 }
 
+// обработчик CLI-команды -cmeans
 static int op_cmeans(const rs_args_t *a)
 {
     rs_point_t *pts = NULL;
@@ -232,7 +241,7 @@ static int op_cmeans(const rs_args_t *a)
         free(pts);
         return 1;
     }
-    size_t c = (size_t)atoi(a->op_arg1);
+    size_t c = (size_t)atoi(a->op_arg1); // число кластеров из CLI
     if (c < 2)
     {
         fprintf(stderr, "cmeans: c должно быть >= 2\n");
@@ -247,7 +256,7 @@ static int op_cmeans(const rs_args_t *a)
         free(pts);
         return 1;
     }
-    rs_cmeans_hard_assign(res, pts);
+    rs_cmeans_hard_assign(res, pts); // проставляем cluster_id точкам
     printf("Fuzzy C-means: c=%zu, итераций=%zu, J=%.4f\n",
            c, res->iterations, res->objective);
     printf("Центроиды:\n");
@@ -262,6 +271,7 @@ static int op_cmeans(const rs_args_t *a)
     return 0;
 }
 
+// обработчик CLI-команды -cmeans_elbow
 static int op_cmeans_elbow(const rs_args_t *a)
 {
     rs_point_t *pts = NULL;
@@ -276,19 +286,19 @@ static int op_cmeans_elbow(const rs_args_t *a)
         free(pts);
         return 1;
     }
-    size_t cmax = (size_t)atoi(a->op_arg1);
+    size_t cmax = (size_t)atoi(a->op_arg1); // верхняя граница диапазона c
     if (cmax < 3 || cmax > 32)
     {
         fprintf(stderr, "cmeans_elbow: c_max должно быть в [3,32]\n");
         free(pts);
         return 1;
     }
-    double *J = (double *)calloc(cmax + 1, sizeof(double));
+    double *J = (double *)calloc(cmax + 1, sizeof(double)); // массив J(c)
     size_t best_c = rs_cmeans_elbow(pts, n, dim, cmax, J);
     printf("Метод локтя:\n");
     printf("   c |       J(c)\n");
     printf("   --+------------\n");
-    double Jmax = 0.0;
+    double Jmax = 0.0; // максимум J для нормировки ASCII-графика
     for (size_t c = 2; c <= cmax; ++c)
     {
         if (J[c] > Jmax)
@@ -296,10 +306,10 @@ static int op_cmeans_elbow(const rs_args_t *a)
             Jmax = J[c];
         }
     }
+    // печать ASCII-графика по строке на каждое c
     for (size_t c = 2; c <= cmax; ++c)
     {
-        
-        int bar = (Jmax > 0) ? (int)(40.0 * J[c] / Jmax) : 0;
+        int bar = (Jmax > 0) ? (int)(40.0 * J[c] / Jmax) : 0; // длина бара
         printf("  %2zu | %10.4f ", c, J[c]);
         for (int i = 0; i < bar; ++i)
         {
@@ -312,7 +322,7 @@ static int op_cmeans_elbow(const rs_args_t *a)
         putchar('\n');
     }
     printf("Рекомендованное c = %zu\n", best_c);
-    
+    // финальный прогон FCM с выбранным c для визуализации
     rs_cmeans_params_t p = rs_cmeans_default_params(best_c);
     rs_cmeans_result_t *res = rs_cmeans_run(pts, n, dim, &p);
     if (res != NULL)
@@ -326,6 +336,7 @@ static int op_cmeans_elbow(const rs_args_t *a)
     return 0;
 }
 
+// обработчик CLI-команды -dbscan
 static int op_dbscan(const rs_args_t *a)
 {
     rs_point_t *pts = NULL;
@@ -340,7 +351,7 @@ static int op_dbscan(const rs_args_t *a)
         free(pts);
         return 1;
     }
-    double pp[2];
+    double pp[2];                                   // pp[0]=eps, pp[1]=minPts
     size_t k = parse_coords(a->op_arg1, pp, 2);
     if (k < 2)
     {
@@ -366,6 +377,7 @@ static int op_dbscan(const rs_args_t *a)
     return 0;
 }
 
+// точка входа: парсит аргументы и диспетчеризует операцию
 int main(int argc, char **argv)
 {
     rs_args_t a;
@@ -374,7 +386,7 @@ int main(int argc, char **argv)
         print_usage(argv[0]);
         return 1;
     }
-    
+    // диспетчер операций по имени флага
     if (strcmp(a.op, "-kd_insert") == 0)
     {
         return op_kd_insert(&a);

@@ -5,10 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* псевдослучайный генератор xorshift32 */
+// псевдослучайный генератор xorshift32
 static unsigned rs_xs_next(unsigned *state)
 {
-    unsigned x = *state;
+    unsigned x = *state; // текущее значение состояния
     x ^= x << 13;
     x ^= x >> 17;
     x ^= x << 5;
@@ -16,37 +16,37 @@ static unsigned rs_xs_next(unsigned *state)
     return x;
 }
 
-/* псевдослучайное число double в полуинтервале [0, 1) */
+// псевдослучайное число double в полуинтервале [0, 1)
 static double rs_xs_unit(unsigned *state)
 {
     return (double)(rs_xs_next(state) & 0x00FFFFFFu) / (double)0x01000000;
 }
 
+// параметры FCM по умолчанию: m=2, max_iter=200, tol=1e-5, seed=42
 rs_cmeans_params_t rs_cmeans_default_params(size_t c)
 {
     rs_cmeans_params_t p;
-    p.c = c;
-    p.m = 2.0;
-    p.max_iter = 200;
-    p.tol = 1e-5;
-    p.seed = 42u;
+    p.c = c;             // число кластеров
+    p.m = 2.0;           // классический коэффициент нечёткости
+    p.max_iter = 200;    // верхняя граница итераций
+    p.tol = 1e-5;        // допуск останова
+    p.seed = 42u;        // фиксированное зерно для воспроизводимости
     return p;
 }
 
-/* инициализация матрицы принадлежности FCM случайными нормированными значениями */
+// инициализация матрицы принадлежности FCM случайными нормированными значениями
 static void cm_init_membership(double *U, size_t n, size_t c, unsigned *rng)
 {
     for (size_t i = 0; i < n; ++i)
     {
-        double sum = 0.0;
+        double sum = 0.0; // сумма по строке для нормировки
         for (size_t j = 0; j < c; ++j)
         {
-            
-            double r = rs_xs_unit(rng) + 0.001;
+            double r = rs_xs_unit(rng) + 0.001; // +0.001 чтобы не было нулевой строки
             U[i * c + j] = r;
             sum += r;
         }
-        
+        // нормировка строки, чтобы сумма принадлежностей = 1
         for (size_t j = 0; j < c; ++j)
         {
             U[i * c + j] /= sum;
@@ -54,7 +54,7 @@ static void cm_init_membership(double *U, size_t n, size_t c, unsigned *rng)
     }
 }
 
-/* пересчёт центроидов Fuzzy C-means: v_j = sum(u_ij^m * x_i) / sum(u_ij^m) */
+// пересчёт центроидов Fuzzy C-means: v_j = sum(u_ij^m * x_i) / sum(u_ij^m)
 static void cm_update_centroids(const rs_point_t *X,
                                 const double *U,
                                 size_t n,
@@ -65,15 +65,15 @@ static void cm_update_centroids(const rs_point_t *X,
 {
     for (size_t j = 0; j < c; ++j)
     {
-        double w_sum = 0.0;
-        double acc[RS_MAX_DIM];
+        double w_sum = 0.0;        // сумма весов точек для j-го кластера
+        double acc[RS_MAX_DIM];    // взвешенная сумма координат
         for (size_t d = 0; d < dim; ++d)
         {
             acc[d] = 0.0;
         }
         for (size_t i = 0; i < n; ++i)
         {
-            double w = pow(U[i * c + j], m);
+            double w = pow(U[i * c + j], m); // вес = u_ij в степени m
             w_sum += w;
             for (size_t d = 0; d < dim; ++d)
             {
@@ -82,8 +82,7 @@ static void cm_update_centroids(const rs_point_t *X,
         }
         if (w_sum < 1e-18)
         {
-            
-            continue;
+            continue; // мёртвый кластер — не трогаем во избежание деления на 0
         }
         for (size_t d = 0; d < dim; ++d)
         {
@@ -95,7 +94,7 @@ static void cm_update_centroids(const rs_point_t *X,
     }
 }
 
-/* пересчёт матрицы принадлежности Fuzzy C-means по формуле Бездека */
+// пересчёт матрицы принадлежности Fuzzy C-means по формуле Бездека
 static void cm_update_membership(const rs_point_t *X,
                                  const rs_point_t *V,
                                  size_t n,
@@ -103,13 +102,11 @@ static void cm_update_membership(const rs_point_t *X,
                                  double m,
                                  double *U)
 {
-    
-    double exponent = 2.0 / (m - 1.0);
+    double exponent = 2.0 / (m - 1.0); // показатель степени в формуле Бездека
     for (size_t i = 0; i < n; ++i)
     {
-        
-        double d_iv[64];
-        int zero_at = -1;
+        double d_iv[64];   // расстояния от точки i до всех центроидов
+        int zero_at = -1;  // индекс центроида, совпавшего с точкой
         for (size_t j = 0; j < c; ++j)
         {
             double d = rs_point_dist(&X[i], &V[j]);
@@ -121,13 +118,14 @@ static void cm_update_membership(const rs_point_t *X,
         }
         if (zero_at >= 0)
         {
+            // вырожденный случай: точка совпала с центроидом
             for (size_t j = 0; j < c; ++j)
             {
                 U[i * c + j] = (j == (size_t)zero_at) ? 1.0 : 0.0;
             }
             continue;
         }
-        
+        // классическая формула Бездека
         for (size_t j = 0; j < c; ++j)
         {
             double sum = 0.0;
@@ -141,7 +139,7 @@ static void cm_update_membership(const rs_point_t *X,
     }
 }
 
-/* вычисление целевой функции J_m алгоритма Fuzzy C-means */
+// вычисление целевой функции J_m алгоритма Fuzzy C-means
 static double cm_objective(const rs_point_t *X,
                            const rs_point_t *V,
                            const double *U,
@@ -149,7 +147,7 @@ static double cm_objective(const rs_point_t *X,
                            size_t c,
                            double m)
 {
-    double J = 0.0;
+    double J = 0.0; // итоговое значение функционала
     for (size_t i = 0; i < n; ++i)
     {
         for (size_t j = 0; j < c; ++j)
@@ -161,16 +159,16 @@ static double cm_objective(const rs_point_t *X,
     return J;
 }
 
-/* max-норма разности двух матриц — критерий останова FCM */
+// max-норма разности двух матриц — критерий останова FCM
 static double cm_inf_diff(const double *A, const double *B, size_t n_total)
 {
-    double m = 0.0;
+    double m = 0.0; // максимальный модуль разности
     for (size_t i = 0; i < n_total; ++i)
     {
         double d = A[i] - B[i];
         if (d < 0.0)
         {
-            d = -d;
+            d = -d; // модуль
         }
         if (d > m)
         {
@@ -180,11 +178,13 @@ static double cm_inf_diff(const double *A, const double *B, size_t n_total)
     return m;
 }
 
+// запуск алгоритма Fuzzy C-means
 rs_cmeans_result_t *rs_cmeans_run(const rs_point_t *points,
                                   size_t n,
                                   size_t dim,
                                   const rs_cmeans_params_t *params)
 {
+    // валидация входных параметров
     if (points == NULL || n == 0 || params == NULL || params->c < 2
         || params->c > 64 || params->m <= 1.0 || dim == 0 || dim > RS_MAX_DIM)
     {
@@ -199,26 +199,25 @@ rs_cmeans_result_t *rs_cmeans_run(const rs_point_t *points,
     res->n = n;
     res->c = c;
     res->dim = dim;
-    res->membership = (double *)malloc(sizeof(double) * n * c);
-    res->centroids = (rs_point_t *)calloc(c, sizeof(rs_point_t));
-    double *U_old = (double *)malloc(sizeof(double) * n * c);
+    res->membership = (double *)malloc(sizeof(double) * n * c); // матрица U
+    res->centroids = (rs_point_t *)calloc(c, sizeof(rs_point_t)); // центроиды
+    double *U_old = (double *)malloc(sizeof(double) * n * c);     // копия для критерия останова
     if (res->membership == NULL || res->centroids == NULL || U_old == NULL)
     {
         rs_cmeans_result_free(res);
         free(U_old);
         return NULL;
     }
-    
-    unsigned rng = params->seed ? params->seed : 1u;
+    unsigned rng = params->seed ? params->seed : 1u; // защита от нулевого зерна
+    // инициализация центроидов случайными точками из входа
     for (size_t j = 0; j < c; ++j)
     {
         size_t idx = rs_xs_next(&rng) % n;
         rs_point_copy(&res->centroids[j], &points[idx]);
         res->centroids[j].cluster_id = (int)j;
     }
-    
     cm_init_membership(res->membership, n, c, &rng);
-    
+    // основной цикл: пересчёт центроидов и матрицы принадлежности
     size_t it = 0;
     for (; it < params->max_iter; ++it)
     {
@@ -229,7 +228,7 @@ rs_cmeans_result_t *rs_cmeans_run(const rs_point_t *points,
         if (diff < params->tol)
         {
             ++it;
-            break;
+            break; // сходимость достигнута
         }
     }
     res->iterations = it;
@@ -238,6 +237,7 @@ rs_cmeans_result_t *rs_cmeans_run(const rs_point_t *points,
     return res;
 }
 
+// освобождение результата FCM со всеми вложенными массивами
 void rs_cmeans_result_free(rs_cmeans_result_t *res)
 {
     if (res == NULL)
@@ -249,7 +249,7 @@ void rs_cmeans_result_free(rs_cmeans_result_t *res)
     free(res);
 }
 
-/* жёсткое назначение кластеров FCM: cluster_id = argmax_j u_ij */
+// жёсткое назначение кластеров FCM: cluster_id = argmax_j u_ij
 void rs_cmeans_hard_assign(const rs_cmeans_result_t *res,
                            rs_point_t *out_points)
 {
@@ -259,8 +259,8 @@ void rs_cmeans_hard_assign(const rs_cmeans_result_t *res,
     }
     for (size_t i = 0; i < res->n; ++i)
     {
-        size_t best = 0;
-        double best_u = res->membership[i * res->c + 0];
+        size_t best = 0;                                    // индекс лучшего кластера
+        double best_u = res->membership[i * res->c + 0];    // максимальная принадлежность
         for (size_t j = 1; j < res->c; ++j)
         {
             double u = res->membership[i * res->c + j];
@@ -274,7 +274,7 @@ void rs_cmeans_hard_assign(const rs_cmeans_result_t *res,
     }
 }
 
-/* метод локтя: выбор c по максимуму второй разности J(c-1)-2J(c)+J(c+1) */
+// метод локтя: выбор c по максимуму второй разности J(c-1)-2J(c)+J(c+1)
 size_t rs_cmeans_elbow(const rs_point_t *points,
                        size_t n,
                        size_t dim,
@@ -285,7 +285,7 @@ size_t rs_cmeans_elbow(const rs_point_t *points,
     {
         return 2;
     }
-    
+    // прогон FCM для всех c из диапазона [2, c_max] и сбор J(c)
     for (size_t c = 2; c <= c_max; ++c)
     {
         rs_cmeans_params_t p = rs_cmeans_default_params(c);
@@ -298,7 +298,7 @@ size_t rs_cmeans_elbow(const rs_point_t *points,
         out_J[c] = r->objective;
         rs_cmeans_result_free(r);
     }
-    
+    // поиск максимума второй разности — это и есть точка локтя
     size_t best_c = 2;
     double best_score = -1.0;
     for (size_t c = 3; c + 1 <= c_max; ++c)

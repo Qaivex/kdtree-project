@@ -5,6 +5,7 @@
 #include "point.h"
 #include <stddef.h>
 
+// загрузка CSV-файла с координатами в массив точек
 int rs_csv_load(const char *path,
                 rs_point_t **out_pts,
                 size_t *out_n,

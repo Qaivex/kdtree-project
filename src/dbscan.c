@@ -5,25 +5,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+// внутреннее состояние одного запуска DBSCAN
 typedef struct
 {
-    rs_point_t *points;
-    size_t n;
-    char *visited;
-    int *cluster_ids;
-    rs_kdtree_t *tree;
-    double eps;
-    size_t min_pts;
+    rs_point_t *points;  // указатель на пользовательский массив точек
+    size_t n;            // количество точек
+    char *visited;       // битовая карта посещённых точек
+    int *cluster_ids;    // итоговые cluster_id (или RS_DBSCAN_NOISE)
+    rs_kdtree_t *tree;   // k-d дерево по тем же точкам
+    double eps;          // радиус ε-окрестности
+    size_t min_pts;      // порог плотности
 } db_state_t;
 
+// очередь точек для BFS расширения кластера
 typedef struct
 {
-    rs_point_t *data;
-    size_t cap;
-    size_t head;
-    size_t tail;
+    rs_point_t *data;    // динамический буфер
+    size_t cap;          // выделенная ёмкость
+    size_t head;         // индекс головы (откуда берём)
+    size_t tail;         // индекс хвоста (куда кладём)
 } db_queue_t;
 
+// инициализация очереди с минимальной ёмкостью 8
 static int db_queue_init(db_queue_t *q, size_t cap)
 {
     if (cap < 8)
@@ -41,17 +44,19 @@ static int db_queue_init(db_queue_t *q, size_t cap)
     return 0;
 }
 
+// освобождение очереди
 static void db_queue_free(db_queue_t *q)
 {
     free(q->data);
     q->data = NULL;
 }
 
+// добавление элемента в хвост, с автоувеличением буфера
 static int db_queue_push(db_queue_t *q, const rs_point_t *p)
 {
     if (q->tail == q->cap)
     {
-        size_t newcap = q->cap * 2;
+        size_t newcap = q->cap * 2; // удваиваем ёмкость
         rs_point_t *nd = (rs_point_t *)realloc(q->data, sizeof(rs_point_t) * newcap);
         if (nd == NULL)
         {
@@ -64,6 +69,7 @@ static int db_queue_push(db_queue_t *q, const rs_point_t *p)
     return 0;
 }
 
+// извлечение элемента из головы; -1 если очередь пуста
 static int db_queue_pop(db_queue_t *q, rs_point_t *out)
 {
     if (q->head == q->tail)
@@ -74,9 +80,10 @@ static int db_queue_pop(db_queue_t *q, rs_point_t *out)
     return 0;
 }
 
-/* поиск индекса точки в исходном массиве для DBSCAN */
+// поиск индекса точки в исходном массиве для DBSCAN
 static size_t db_locate(const db_state_t *st, const rs_point_t *p)
 {
+    // быстрый путь: пробуем напрямую через сохранённый index
     if (p->index < st->n)
     {
         const rs_point_t *cand = &st->points[p->index];
@@ -99,6 +106,7 @@ static size_t db_locate(const db_state_t *st, const rs_point_t *p)
             return p->index;
         }
     }
+    // fallback: линейный поиск по всем точкам
     for (size_t i = 0; i < st->n; ++i)
     {
         const rs_point_t *cand = &st->points[i];
@@ -121,14 +129,15 @@ static size_t db_locate(const db_state_t *st, const rs_point_t *p)
             return i;
         }
     }
-    return st->n;
+    return st->n; // не найдено
 }
 
-/* ε-запрос окрестности DBSCAN через k-d дерево */
+// ε-запрос окрестности DBSCAN через k-d дерево
 static rs_point_t *db_region_query(const db_state_t *st,
                                    const rs_point_t *p,
                                    size_t *out_count)
 {
+    // первый проход: узнаём сколько соседей будет всего
     size_t total = rs_kdtree_range(st->tree, p, st->eps, NULL, 0);
     if (total == 0)
     {
@@ -141,18 +150,20 @@ static rs_point_t *db_region_query(const db_state_t *st,
         *out_count = 0;
         return NULL;
     }
+    // второй проход: собираем соседей в буфер
     size_t got = rs_kdtree_range(st->tree, p, st->eps, buf, total);
     *out_count = got;
     return buf;
 }
 
-/* расширение кластера DBSCAN через BFS-обход соседей */
+// расширение кластера DBSCAN через BFS-обход соседей
 static void db_expand(db_state_t *st,
                       size_t seed_idx,
                       rs_point_t *initial_neighbors,
                       size_t initial_count,
                       int cluster_id)
 {
+    // присваиваем точке-зародышу метку нового кластера
     st->cluster_ids[seed_idx] = cluster_id;
     st->points[seed_idx].cluster_id = cluster_id;
     db_queue_t q;
@@ -160,6 +171,7 @@ static void db_expand(db_state_t *st,
     {
         return;
     }
+    // в очередь — все соседи зародыша
     for (size_t i = 0; i < initial_count; ++i)
     {
         db_queue_push(&q, &initial_neighbors[i]);
@@ -172,7 +184,7 @@ static void db_expand(db_state_t *st,
         {
             continue;
         }
-        
+        // была шумом — поднимаем до border текущего кластера
         if (st->cluster_ids[idx] == RS_DBSCAN_NOISE)
         {
             st->cluster_ids[idx] = cluster_id;
@@ -189,6 +201,7 @@ static void db_expand(db_state_t *st,
         rs_point_t *nbrs = db_region_query(st, &cur, &cnt);
         if (cnt >= st->min_pts)
         {
+            // точка — ядро, добавляем её соседей в очередь
             for (size_t i = 0; i < cnt; ++i)
             {
                 db_queue_push(&q, &nbrs[i]);
@@ -199,17 +212,19 @@ static void db_expand(db_state_t *st,
     db_queue_free(&q);
 }
 
+// запуск DBSCAN: строит k-d дерево, обходит все точки, расширяет кластеры
 rs_dbscan_result_t *rs_dbscan_run(rs_point_t *points,
                                   size_t n,
                                   size_t dim,
                                   const rs_dbscan_params_t *params)
 {
+    // проверка валидности входа
     if (points == NULL || n == 0 || params == NULL
         || params->eps <= 0.0 || params->min_pts == 0)
     {
         return NULL;
     }
-    
+    // инициализация: все точки изначально считаются шумом
     for (size_t i = 0; i < n; ++i)
     {
         points[i].index = i;
@@ -234,9 +249,9 @@ rs_dbscan_result_t *rs_dbscan_run(rs_point_t *points,
     db_state_t st;
     st.points = points;
     st.n = n;
-    st.visited = (char *)calloc(n, 1);
+    st.visited = (char *)calloc(n, 1);            // битовая карта посещённых
     st.cluster_ids = res->cluster_ids;
-    st.tree = rs_kdtree_build(points, n, dim);
+    st.tree = rs_kdtree_build(points, n, dim);    // дерево для быстрых ε-запросов
     st.eps = params->eps;
     st.min_pts = params->min_pts;
     if (st.visited == NULL || st.tree == NULL)
@@ -247,7 +262,7 @@ rs_dbscan_result_t *rs_dbscan_run(rs_point_t *points,
         free(res);
         return NULL;
     }
-    int next_cluster = 0;
+    int next_cluster = 0; // счётчик созданных кластеров
     for (size_t i = 0; i < n; ++i)
     {
         if (st.visited[i])
@@ -260,7 +275,7 @@ rs_dbscan_result_t *rs_dbscan_run(rs_point_t *points,
         if (cnt < st.min_pts)
         {
             free(nbrs);
-            continue;
+            continue; // мало соседей — точка остаётся шумом
         }
         db_expand(&st, i, nbrs, cnt, next_cluster);
         free(nbrs);
@@ -268,6 +283,7 @@ rs_dbscan_result_t *rs_dbscan_run(rs_point_t *points,
     }
     res->n_clusters = (size_t)next_cluster;
     res->n_noise = 0;
+    // подсчёт точек, оставшихся шумом
     for (size_t i = 0; i < n; ++i)
     {
         if (res->cluster_ids[i] == RS_DBSCAN_NOISE)
@@ -280,6 +296,7 @@ rs_dbscan_result_t *rs_dbscan_run(rs_point_t *points,
     return res;
 }
 
+// освобождение результата DBSCAN со всеми вложенными массивами
 void rs_dbscan_result_free(rs_dbscan_result_t *res)
 {
     if (res == NULL)
